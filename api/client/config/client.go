@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/0xrawsec/golang-utils/crypto/data"
@@ -25,6 +26,19 @@ type Client struct {
 	MaxUploadSize     int64  `json:"max-upload-size" toml:"max-upload-size" comment:"Maximum allowed upload size"`
 
 	localAddr string
+}
+
+// localAddrMu guards Client.localAddr, which is written by the dialers of the
+// HTTP transport and read concurrently when requests are prepared. A package
+// level lock keeps Client copyable (it is passed around by value as config).
+var localAddrMu sync.RWMutex
+
+func (c *Client) setLocalAddr(con net.Conn) {
+	if addr, ok := con.LocalAddr().(*net.TCPAddr); ok {
+		localAddrMu.Lock()
+		c.localAddr = addr.IP.String()
+		localAddrMu.Unlock()
+	}
 }
 
 func (c *Client) HasConnectionSettings() bool {
@@ -48,14 +62,11 @@ func (c *Client) DialContext(ctx context.Context, network, addr string) (con net
 	dialer := net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
-		DualStack: true,
 	}
 	con, err = dialer.DialContext(ctx, network, addr)
 
 	if err == nil && con != nil {
-		if addr, ok := con.LocalAddr().(*net.TCPAddr); ok {
-			c.localAddr = addr.IP.String()
-		}
+		c.setLocalAddr(con)
 	}
 
 	return
@@ -69,9 +80,7 @@ func (c *Client) DialTLSContext(ctx context.Context, network, addr string) (net.
 	}
 
 	if con != nil {
-		if addr, ok := con.LocalAddr().(*net.TCPAddr); ok {
-			c.localAddr = addr.IP.String()
-		}
+		c.setLocalAddr(con)
 	}
 
 	if c.ServerFingerprint == "" {
@@ -108,5 +117,7 @@ func (c *Client) Transport() http.RoundTripper {
 }
 
 func (c *Client) LocalAddr() string {
+	localAddrMu.RLock()
+	defer localAddrMu.RUnlock()
 	return c.localAddr
 }

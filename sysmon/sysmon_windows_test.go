@@ -6,6 +6,7 @@ package sysmon
 import (
 	"bytes"
 	"encoding/xml"
+	"os"
 	"testing"
 	"time"
 
@@ -21,6 +22,11 @@ func init() {
 
 func TestSysmonInfo(t *testing.T) {
 	var c *Config
+
+	// the binary is not redistributable, CI downloads it from live.sysinternals.com
+	if _, err := os.Stat("./data/Sysmon64.exe"); err != nil {
+		t.Skip("./data/Sysmon64.exe not found, skipping Sysmon install test")
+	}
 
 	tt := toast.FromT(t)
 

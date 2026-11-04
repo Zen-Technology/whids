@@ -1,0 +1,176 @@
+name: Release
+
+# Builds the WHIDS release bundle and publishes it as a GitHub release.
+#
+#   git tag v2.1.0 && git push origin v2.1.0      -> builds and publishes
+#   Actions > Release > Run workflow (dry run)    -> builds, uploads artifact only
+#
+# The bundle mirrors what make.sh produced: agent binaries named the way
+# manage.bat expects (whids-v<version>-<arch>.exe), the installer with its
+# VERSION/COMMITID filled in, the Sysmon configurations, the compiled Gene
+# rules, and the whids-man manager for Linux/Windows/macOS.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into a dry-run build (no release is published)"
+        required: true
+        default: "0.0.0-dev"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    name: Build release bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # build provenance attestation
+      attestations: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # no shared cache for release builds (cache-poisoning hardening)
+          cache: false
+
+      - name: Resolve version
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$INPUT_VERSION"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a semantic version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test before packaging
+        run: >-
+          go test -count=1 -timeout 20m
+          ./agent/config ./agent/sysinfo ./api/... ./event ./ioc ./logger
+          ./los ./sysmon ./tools ./utils/... ./utilities/manager
+
+      - name: Build binaries
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          root="dist/whids-v${VERSION}"
+          mkdir -p "$root/windows" "$root/manager"
+          ldflags="-s -w -X main.version=${VERSION} -X main.commitID=${GITHUB_SHA}"
+
+          for arch in amd64 386; do
+            GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$ldflags" \
+              -o "$root/windows/whids-v${VERSION}-${arch}.exe" ./utilities/whids
+          done
+
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags "$ldflags" \
+              -o "$root/manager/whids-man-v${VERSION}-${os}-${arch}${ext}" ./utilities/manager
+          done
+
+      - name: Add installer, Sysmon configs and rules
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          root="dist/whids-v${VERSION}"
+          sed -E \
+            -e "s/set VERSION=.*/set VERSION=${VERSION}/" \
+            -e "s/set COMMITID=.*/set COMMITID=${GITHUB_SHA}/" \
+            utilities/whids/manage.bat > "$root/windows/manage.bat"
+          cp -r utilities/sysmon "$root/windows/sysmon"
+          rm -f "$root/windows/sysmon/makefile"
+
+          mkdir -p "$root/windows/rules"
+          base="https://raw.githubusercontent.com/0xrawsec/gene-rules/master"
+          curl -fsSL --retry 3 -o "$root/windows/rules/compiled.gen" "$base/compiled.gen"
+          curl -fsSL --retry 3 -o "$root/windows/rules/compiled.gen.sha256" "$base/compiled.gen.sha256"
+          # verify the rules match their published checksum
+          expected="$(awk '{print $1}' "$root/windows/rules/compiled.gen.sha256")"
+          actual="$(sha256sum "$root/windows/rules/compiled.gen" | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::compiled.gen checksum mismatch ($actual != $expected)"
+            exit 1
+          fi
+
+          cp LICENSE README.md CHANGELOG.md "$root/"
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -qr "whids-v${VERSION}-release-bundle.zip" "whids-v${VERSION}"
+          # individual binaries are also attached so they can be fetched directly
+          find "whids-v${VERSION}" -type f \( -name '*.exe' -o -name 'whids-man-*' \) -exec cp {} . \;
+          sha256sum whids-v*-release-bundle.zip whids-v*.exe whids-man-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-bundle
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/whids-man-*
+            dist/SHA256SUMS
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub release
+    needs: bundle
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-bundle
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "WHIDS $TAG" \
+            --generate-notes \
+            --verify-tag $prerelease

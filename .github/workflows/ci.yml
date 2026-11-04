@@ -1,0 +1,221 @@
+name: CI
+
+# Lint, test and build WHIDS on every push and pull request.
+#
+# The EDR agent (./agent, ./utilities/whids) only compiles for Windows, so the
+# pipeline runs the portable packages on Linux (with -race) and the full suite
+# on a Windows runner. Agent/Sysmon integration tests need non-redistributable
+# binaries and live in integration-windows.yml instead.
+
+on:
+  push:
+    branches: [master, main, "zen/**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # packages that build on every OS (agent + service wrapper are Windows-only)
+  PORTABLE_PKGS: >-
+    ./agent/config ./agent/sysinfo ./api/... ./event ./ioc ./logger ./los
+    ./sysmon ./tools ./utils/... ./utilities/manager
+
+jobs:
+  lint:
+    name: Lint (gofmt, vet, staticcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 # zizmor: ignore[cache-poisoning] -- no release artifacts from this job
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'ed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go mod tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: go vet (linux)
+        run: |
+          # shellcheck disable=SC2086 # PORTABLE_PKGS is a package list
+          go vet $PORTABLE_PKGS
+
+      - name: go vet (windows)
+        env:
+          GOOS: windows
+        run: go vet ./...
+
+      - name: staticcheck (windows target)
+        # SA1019 (deprecated APIs) is reported but not enforced: upstream still
+        # uses io/ioutil and rand.Seed in many places.
+        # The tool is built for the runner; only the analysis targets windows.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          GOOS=windows "$(go env GOPATH)/bin/staticcheck" -checks 'SA*,-SA1019' ./...
+
+  test-linux:
+    name: Test (linux, race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 # zizmor: ignore[cache-poisoning] -- no release artifacts from this job
+        with:
+          go-version-file: go.mod
+
+      - name: go test
+        run: |
+          status=0
+          # shellcheck disable=SC2086 # PORTABLE_PKGS is a package list
+          go test -json -race -count=1 -timeout 20m \
+            -coverprofile=coverage.out -covermode=atomic \
+            $PORTABLE_PKGS > go-test-linux.json || status=$?
+          python3 .github/scripts/go-test-report.py go-test-linux.json "Test (linux, race)" "$status" || status=1
+          exit "$status"
+
+      - name: Coverage summary
+        if: always() && hashFiles('coverage.out') != ''
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')"
+          echo "### Linux coverage: ${total}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-results-linux
+          path: |
+            coverage.out
+            go-test-linux.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-windows:
+    name: Test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 # zizmor: ignore[cache-poisoning] -- no release artifacts from this job
+        with:
+          go-version-file: go.mod
+
+      # Hosted Windows runners execute as an administrator, which the audit
+      # ACL / ETW autologger / canary tests require. TestAgent and
+      # TestSysmonInfo skip themselves unless their binaries are present.
+      - name: go test
+        shell: pwsh
+        run: |
+          go test -json -count=1 -timeout 30m ./... > go-test-windows.json
+          $status = $LASTEXITCODE
+          python .github/scripts/go-test-report.py go-test-windows.json "Test (windows)" $status
+          if ($LASTEXITCODE -ne 0) { $status = 1 }
+          exit $status
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-results-windows
+          path: go-test-windows.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: whids-windows-amd64, pkg: ./utilities/whids, goos: windows, goarch: amd64, ext: .exe }
+          - { name: whids-windows-386, pkg: ./utilities/whids, goos: windows, goarch: "386", ext: .exe }
+          - { name: whids-man-linux-amd64, pkg: ./utilities/manager, goos: linux, goarch: amd64, ext: "" }
+          - { name: whids-man-linux-arm64, pkg: ./utilities/manager, goos: linux, goarch: arm64, ext: "" }
+          - { name: whids-man-windows-amd64, pkg: ./utilities/manager, goos: windows, goarch: amd64, ext: .exe }
+          - { name: whids-man-darwin-arm64, pkg: ./utilities/manager, goos: darwin, goarch: arm64, ext: "" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # outputs are uploaded as artifacts: build from a cold cache
+          cache: false
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          NAME: ${{ matrix.name }}
+          EXT: ${{ matrix.ext }}
+          PKG: ${{ matrix.pkg }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=0.0.0-ci.${GITHUB_RUN_NUMBER} -X main.commitID=${GITHUB_SHA}" \
+            -o "dist/${NAME}${EXT}" "$PKG"
+          (cd dist && sha256sum -- * > "${NAME}.sha256")
+          ls -l dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.name }}
+          path: dist/
+          retention-days: 7
+
+  vuln:
+    name: govulncheck (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0 # zizmor: ignore[cache-poisoning] -- no release artifacts from this job
+        with:
+          go-version-file: go.mod
+
+      - name: govulncheck
+        env:
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGETS: ${{ matrix.goos == 'windows' && './...' || env.PORTABLE_PKGS }}
+        run: |
+          # build the tool for the runner, analyse for the target OS
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          # shellcheck disable=SC2086 # TARGETS is a package list
+          GOOS="$TARGET_GOOS" "$(go env GOPATH)/bin/govulncheck" $TARGETS

@@ -5,7 +5,7 @@ import (
 	"github.com/0xrawsec/whids/event"
 )
 
-//Sysmon related
+// Sysmon related
 var (
 	// sysmonChannel Sysmon windows event log channel
 	sysmonChannel = "Microsoft-Windows-Sysmon/Operational"

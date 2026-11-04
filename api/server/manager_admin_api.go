@@ -307,7 +307,7 @@ func (m *Manager) admAPIUser(wt http.ResponseWriter, rq *http.Request) {
 			wt.Write(admErr(format("unknown user for uuid: %s", uuid)))
 		} else {
 			msg := format("failed to search user in database: %s", err)
-			m.logAPIErrorf(msg)
+			m.logAPIErrorf("%s", msg)
 			wt.Write(admErr(msg))
 		}
 	} else {

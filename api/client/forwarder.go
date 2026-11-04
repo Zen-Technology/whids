@@ -326,6 +326,15 @@ func (f *Forwarder) Collect() {
 	}
 }
 
+// pendingEvents returns the number of piped events not yet collected.
+// EventsPiped is written under f's lock by PipeEvent/Reset, so it must be
+// read under the same lock from the forwarding goroutine.
+func (f *Forwarder) pendingEvents() uint64 {
+	f.Lock()
+	defer f.Unlock()
+	return f.EventsPiped
+}
+
 // Run starts the Forwarder worker function
 func (f *Forwarder) Run() {
 	f.Add(1)
@@ -342,9 +351,10 @@ func (f *Forwarder) Run() {
 			}
 
 			// Sending piped events
-			if f.EventsPiped >= f.EventTresh || time.Now().After(timer.Add(f.TimeTresh)) || f.Local {
+			pending := f.pendingEvents()
+			if pending >= f.EventTresh || time.Now().After(timer.Add(f.TimeTresh)) || f.Local {
 				// Send out events if there are pending events
-				if f.EventsPiped > 0 {
+				if pending > 0 {
 					f.Collect()
 				}
 				// reset timer
@@ -370,7 +380,7 @@ func (f *Forwarder) Close() {
 	f.Wait()
 
 	// we collect last events if needed
-	if f.EventsPiped > 0 {
+	if f.pendingEvents() > 0 {
 		f.Collect()
 	}
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/0xrawsec/whids/event"
@@ -53,11 +54,13 @@ type TransactionId uint64
 // EventLogger structure used to log EDR events
 type EventLogger struct {
 	sync.RWMutex
-	root        string
-	base        string
-	maxSize     int64
-	cache       map[string]*IndexedLogfile
-	transacting TransactionId
+	root    string
+	base    string
+	maxSize int64
+	cache   map[string]*IndexedLogfile
+	// id of the transaction holding the lock, 0 when none. Atomic because
+	// WriteEvent reads it from goroutines that do not hold the lock.
+	transacting atomic.Uint64
 }
 
 // NewEventLogger creates a new EventLogger
@@ -120,7 +123,7 @@ func (l *EventLogger) InitTransaction() (id TransactionId) {
 	for ; id == 0; id = TransactionId(rand.Uint64()) {
 	}
 
-	l.transacting = id
+	l.transacting.Store(uint64(id))
 	return
 }
 
@@ -130,7 +133,9 @@ func (l *EventLogger) WriteEvent(id TransactionId, key string, evt *event.EdrEve
 	var il *IndexedLogfile
 	var re *RawEvent
 
-	if l.transacting == id {
+	// id 0 means "no transaction": never allow it, otherwise a caller could
+	// write without holding the logger lock
+	if current := TransactionId(l.transacting.Load()); id != 0 && current == id {
 		if re, err = NewRawEvent(evt); err != nil {
 			return
 		}
@@ -142,7 +147,7 @@ func (l *EventLogger) WriteEvent(id TransactionId, key string, evt *event.EdrEve
 		return il.WriteRawEvent(re)
 
 	}
-	return 0, fmt.Errorf("invalid transaction id %d (expected: %d)", id, l.transacting)
+	return 0, fmt.Errorf("invalid transaction id %d (expected: %d)", id, l.transacting.Load())
 }
 
 // CountFiles returns the count of opened IndexedFiles
@@ -151,7 +156,7 @@ func (l *EventLogger) CountFiles() int {
 }
 
 func (l *EventLogger) endTransaction() {
-	l.transacting = 0
+	l.transacting.Store(0)
 }
 
 // CommitTransaction commits a transaction leaving the place for a new one.

@@ -153,8 +153,12 @@ func prepareTest() (m *Manager, c *client.ManagerClient) {
 	}
 	// wait that server is up
 	// might generate error message in log
+	deadline := time.Now().Add(30 * time.Second)
 	for !c.IsServerUp() {
-		time.Sleep(time.Nanosecond * 500)
+		if time.Now().After(deadline) {
+			panic("manager did not come up within 30s (check TLS fixture / fingerprint)")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return
 }
@@ -533,6 +537,8 @@ func TestEventStream(t *testing.T) {
 	expctd := float64(20000)
 	total := float64(0)
 	sumEps := float64(0)
+	// guards total and sumEps, updated by every client goroutine
+	statsMu := sync.Mutex{}
 	nclients := float64(4)
 	wg := sync.WaitGroup{}
 
@@ -573,9 +579,11 @@ func TestEventStream(t *testing.T) {
 			}
 
 			eps := recvd / float64(time.Since(start).Seconds())
+			statsMu.Lock()
 			total += recvd
 			// we take into account only normal clients
 			sumEps += eps
+			statsMu.Unlock()
 			t.Logf("Normal client received %.1f EPS", eps)
 		}()
 	}

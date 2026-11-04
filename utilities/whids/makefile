@@ -1,13 +1,19 @@
 TEST=$(GOPATH)/test
 MAIN_BASEN_SRC=whids
 RELEASE=$(GOPATH)/release/$(MAIN_BASEN_SRC)
-VERSION=$(shell git tag | tail -1 | sed 's/^v//')
+VERSION?=$(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+ifeq ($(VERSION),)
+  VERSION=dev
+endif
 COMMITID=$(shell git rev-parse HEAD)
 
+# Build metadata is injected at link time (see version.go)
+LDVARS=-X main.version=$(VERSION) -X main.commitID=$(COMMITID)
+
 # Strips symbols and dwarf to make binary smaller
-OPTS=-ldflags "-s -w" -trimpath
+OPTS=-ldflags "-s -w $(LDVARS)" -trimpath
 ifdef DEBUG
-	OPTS=
+	OPTS=-ldflags "$(LDVARS)"
 endif
 
 all:
@@ -34,7 +40,7 @@ init:
 	mkdir -p $(RELEASE)/windows
 
 install:
-	go install $(OPTS) $(MAIN_BASEN_SRC).go
+	go install $(OPTS) ./
 
 compile: windows
 
@@ -46,7 +52,7 @@ windows:
 	#cd $(RELEASE)/windows; tar -cvzf ../$(MAIN_BASEN_SRC)-windows-$(VERSION).tar.gz *
 
 buildversion:
-	printf "package main\n\nconst(\n    version=\"$(VERSION)\"\n    commitID=\"$(COMMITID)\"\n)\n" > version.go
+	@echo "version $(VERSION) commit $(COMMITID) (injected via -ldflags, see version.go)"
 
 installer:
 	sed -E -e "s/set VERSION=.*?/set VERSION=$(VERSION)/" -e "s/set COMMITID=.*?/set COMMITID=$(COMMITID)/" manage.bat > $(RELEASE)/windows/manage.bat

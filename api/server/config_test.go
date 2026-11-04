@@ -7,6 +7,10 @@ import (
 )
 
 var (
+	// testServerFingerprint is computed from the TLS fixture generated in
+	// TestMain so certificate pinning is exercised against a real key.
+	testServerFingerprint string
+
 	mconf = ManagerConfig{
 		AdminAPI: AdminAPIConfig{
 			Host: "localhost",
@@ -40,7 +44,7 @@ func makeClientConfig(mc *ManagerConfig) config.Client {
 		Port:              mc.EndpointAPI.Port,
 		UUID:              "5a92baeb-9384-47d3-92b4-a0db6f9b8c6d",
 		Key:               "don'tcomplain",
-		ServerFingerprint: "511dc40cb2363974a97dfd47437feb8307cbd9d938645e1442775aa97ec14227",
+		ServerFingerprint: testServerFingerprint,
 		Unsafe:            true,
 	}
 }

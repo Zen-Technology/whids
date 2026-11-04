@@ -145,15 +145,30 @@ func wmicCreateProcess(cmdLine string) int {
 	return int(pid)
 }
 
-func init() {
-	var err error
+// osqueryErr is non-nil when the osquery test binary is absent; integration
+// tests skip instead of panicking so the unit tests in this package still run.
+var osqueryErr error
 
-	if osqueryBin, err = os.ReadFile(osqueryTestBinPath); err != nil {
-		panic(err)
-	}
+func init() {
+	osqueryBin, osqueryErr = os.ReadFile(osqueryTestBinPath)
 
 	sysmon.SetAgnosticConfig(sysmonTestConfig)
 
+}
+
+// requireIntegrationFixtures skips the calling test when the external
+// binaries the agent integration test needs (osquery, Sysmon) are missing.
+// CI provides them in the dedicated integration job.
+func requireIntegrationFixtures(t *testing.T) {
+	t.Helper()
+	if osqueryErr != nil {
+		t.Skipf("osquery test binary not found at %s: %s", osqueryTestBinPath, osqueryErr)
+	}
+	if _, err := sysmon.NewSysmonInfo(); errors.Is(err, sysmon.ErrSysmonNotInstalled) {
+		if _, err := os.Stat("../sysmon/data/Sysmon64.exe"); err != nil {
+			t.Skip("Sysmon is not installed and ../sysmon/data/Sysmon64.exe is missing")
+		}
+	}
 }
 
 func drainOldAutologgerEvents(t *testing.T) {
@@ -340,13 +355,15 @@ func installSysmon() {
 }
 
 func TestAgent(t *testing.T) {
+	requireIntegrationFixtures(t)
+
 	// draining old events from autologger
 	drainOldAutologgerEvents(t)
 
 	tt := toast.FromT(t)
 	// we use tt in separate threads and FailNow breaks
 	// some tests in this case (seems to break thread)
-	tt.FailNow = false
+	tt.FailNowFl = false
 
 	defer cleanup()
 

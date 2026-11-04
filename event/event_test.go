@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	eventFile = "./data/events.json"
+	eventFile = "../testdata/events.json"
 	events    = make([]EdrEvent, 0)
 	eventData = "/Event/EventData/"
 )

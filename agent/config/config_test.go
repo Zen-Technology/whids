@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package config
 
 import (
@@ -166,6 +169,9 @@ func TestReporting(t *testing.T) {
 	cfg := buildDefaultConfig(tmp)
 	// copy osquery binary
 	src := fmt.Sprintf("../data/%s.%s%s", los.OS, tools.ToolOSQueryi, los.ExecExt)
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("osquery test binary not found at %s", src)
+	}
 	dst := los.ExecFilename(tools.ToolOSQueryi)
 	tt.CheckErr(fsutil.CopyFile(src, dst))
 	os.Setenv(los.PathEnvVar, los.BuildPathEnv(los.GetPathEnv(), tmp))
