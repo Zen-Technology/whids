@@ -27,7 +27,7 @@ import (
 )
 
 var (
-	eventFile = "./data/events.json"
+	eventFile = "../../testdata/events.json"
 	events    = make([]event.EdrEvent, 0)
 )
 
@@ -58,15 +58,14 @@ func emitEvents(count int, detection bool) (ce chan *event.EdrEvent) {
 		defer close(ce)
 		for count > 0 {
 			i := rand.Int() % len(events)
-			e := events[i]
-			if detection && !e.IsDetection() {
+			if detection != events[i].IsDetection() {
 				continue
 			}
-			if !detection && e.IsDetection() {
-				continue
-			}
+			// deep copy: EdrEvent embeds *etw.Event, so a value copy would
+			// share (and race on) the timestamp with other emitted events
+			e := events[i].Copy()
 			e.Event.System.TimeCreated.SystemTime = time.Now()
-			ce <- &e
+			ce <- e
 			count--
 		}
 	}()
@@ -79,16 +78,18 @@ func emitMixedEvents(ecount, dcount int) (ce chan *event.EdrEvent) {
 		defer close(ce)
 		for ecount > 0 || dcount > 0 {
 			i := rand.Int() % len(events)
-			e := events[i]
-			if dcount == 0 && e.IsDetection() {
+			isDetection := events[i].IsDetection()
+			if dcount == 0 && isDetection {
 				continue
 			}
-			if ecount == 0 && !e.IsDetection() {
+			if ecount == 0 && !isDetection {
 				continue
 			}
+			// deep copy, see emitEvents
+			e := events[i].Copy()
 			e.Event.System.TimeCreated.SystemTime = time.Now()
-			ce <- &e
-			if e.IsDetection() {
+			ce <- e
+			if isDetection {
 				dcount--
 			} else {
 				ecount--
@@ -296,13 +297,14 @@ func TestForwarderParallel(t *testing.T) {
 	r.Run()
 	defer r.Shutdown()
 
+	// set once: every client goroutine reads the shared forwarder config
+	fconf.Client.Key = key
 	for i := 0; i < nclients; i++ {
 		wg.Add(1)
 		jobs.Acquire()
 		go func() {
 			defer jobs.Release()
 			defer wg.Done()
-			fconf.Client.Key = key
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

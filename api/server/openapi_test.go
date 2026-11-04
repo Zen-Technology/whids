@@ -1065,7 +1065,16 @@ func TestOpenApiTemplate(t *testing.T) {
 }
 */
 
+// TestOpenApiFinisher regenerates openapi_def.go from the requests recorded by
+// the TestOpenApi* tests. It rewrites a tracked source file (with random keys
+// and timestamps), so it only runs on demand:
+//
+//	WHIDS_UPDATE_OPENAPI=1 go test ./api/server -run 'TestOpenApi'
 func TestOpenApiFinisher(t *testing.T) {
+	if os.Getenv("WHIDS_UPDATE_OPENAPI") == "" {
+		t.Skip("set WHIDS_UPDATE_OPENAPI=1 to regenerate openapi_def.go")
+	}
+
 	b := builder.CodeBuilder{}
 	//pkg := reflect.TypeOf(OpenAPIDefinition).PkgPath()
 	b.Package("server")

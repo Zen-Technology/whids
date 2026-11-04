@@ -70,7 +70,7 @@ var (
 	configFile  = filepath.Join(abs, "config.toml")
 	logFallback = filepath.Join(abs, "fallback.log")
 
-	osSignals = make(chan os.Signal)
+	osSignals = make(chan os.Signal, 1) // buffered: signal.Notify drops signals on a full channel
 
 	logger = golog.Stdout
 )
@@ -235,10 +235,13 @@ func main() {
 
 	sysinfo.RegisterEdrInfo(i)
 
-	isIntSess, err := svc.IsAnInteractiveSession()
+	// svc.IsAnInteractiveSession is deprecated and misreports sessions started
+	// over SSH/WinRM or from scheduled tasks; IsWindowsService asks the SCM directly.
+	isService, err := svc.IsWindowsService()
 	if err != nil {
-		logger.Abort(exitFail, fmt.Errorf("failed to determine if we are running in an interactive session: %v", err))
+		logger.Abort(exitFail, fmt.Errorf("failed to determine if we are running as a Windows service: %v", err))
 	}
+	isIntSess := !isService
 
 	if flagInstall || flagAutologger {
 

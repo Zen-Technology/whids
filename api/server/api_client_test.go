@@ -216,7 +216,7 @@ func TestClientExecuteDroppedCommand(t *testing.T) {
 	// we must get an error for non existing file
 	tt.Assert(cmd.Fetch["/nonexistingfile"].Error != "")
 
-	t.Logf(cmd.Fetch["/nonexistingfile"].Error)
+	t.Log(cmd.Fetch["/nonexistingfile"].Error)
 }
 
 func TestClientSysmonConfig(t *testing.T) {

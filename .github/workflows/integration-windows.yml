@@ -1,0 +1,85 @@
+name: Windows integration
+
+# End-to-end agent test on a real Windows host: installs Sysmon, provides an
+# osquery binary, starts a manager and drives the agent through ETW, Sysmon,
+# hooks and command execution (agent/agent_test.go: TestAgent, and
+# sysmon/sysmon_windows_test.go: TestSysmonInfo).
+#
+# Sysmon and osquery are not redistributable from this repository, so they are
+# downloaded at run time. This job changes system state (Sysmon driver, ETW
+# autologger, audit policy), which is fine on ephemeral hosted runners but is
+# why it is not part of every push.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 7 * * 3" # weekly, Wednesday 07:41 UTC
+  pull_request:
+    paths:
+      - "agent/**"
+      - "sysmon/**"
+      - "utilities/whids/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/integration-windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent:
+    name: Agent integration (windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fetch Sysmon
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force sysmon\data | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'Sysmon.zip'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Sysmon.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sysmon') -Force
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'sysmon\Sysmon64.exe') sysmon\data\Sysmon64.exe
+          # Authenticode check: refuse to install an unsigned/tampered driver package
+          $sig = Get-AuthenticodeSignature sysmon\data\Sysmon64.exe
+          if ($sig.Status -ne 'Valid') { throw "Sysmon64.exe signature is $($sig.Status)" }
+          Write-Host "Sysmon signer: $($sig.SignerCertificate.Subject)"
+
+      - name: Fetch osquery
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force agent\data | Out-Null
+          choco install osquery --no-progress -y
+          $bin = Get-ChildItem -Path "$env:ProgramFiles\osquery" -Recurse -Filter osqueryi.exe | Select-Object -First 1
+          if (-not $bin) { throw 'osqueryi.exe not found after install' }
+          Copy-Item $bin.FullName agent\data\windows.osqueryi.exe
+          & agent\data\windows.osqueryi.exe --version
+
+      - name: Sysmon install test
+        shell: pwsh
+        run: go test -count=1 -v -timeout 15m -run 'TestSysmonInfo$' ./sysmon
+
+      - name: Agent integration test
+        shell: pwsh
+        run: go test -count=1 -v -timeout 40m -run 'TestAgent$|TestReporting$' ./agent ./agent/config
+
+      - name: Collect logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 50 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Id, Message

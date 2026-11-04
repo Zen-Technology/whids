@@ -25,7 +25,7 @@ const (
 
 var (
 	manager   *server.Manager
-	osSignals = make(chan os.Signal)
+	osSignals = make(chan os.Signal, 1) // buffered: signal.Notify drops signals on a full channel
 
 	// Used for certificate generation
 	defaultOrg          = "WHIDS Manager"
