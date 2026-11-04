@@ -76,7 +76,7 @@ jobs:
         run: |
           go test -json -count=1 -timeout 15m -run 'TestSysmonInfo$' ./sysmon > go-test-sysmon.json
           $status = $LASTEXITCODE
-          python .github/scripts/go-test-report.py go-test-sysmon.json "Sysmon install test"
+          python .github/scripts/go-test-report.py go-test-sysmon.json "Sysmon install test" $status
           if ($LASTEXITCODE -ne 0) { $status = 1 }
           exit $status
 
@@ -85,7 +85,7 @@ jobs:
         run: |
           go test -json -count=1 -timeout 40m -run 'TestAgent$|TestReporting$' ./agent ./agent/config > go-test-agent.json
           $status = $LASTEXITCODE
-          python .github/scripts/go-test-report.py go-test-agent.json "Agent integration test"
+          python .github/scripts/go-test-report.py go-test-agent.json "Agent integration test" $status
           if ($LASTEXITCODE -ne 0) { $status = 1 }
           exit $status
 

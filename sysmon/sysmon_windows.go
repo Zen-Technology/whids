@@ -9,14 +9,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/0xrawsec/golang-utils/crypto/file"
 	"github.com/0xrawsec/golang-utils/fsutil"
-	"github.com/0xrawsec/golang-utils/regexp/submatch"
-	"github.com/0xrawsec/golang-win32/win32"
 	"github.com/0xrawsec/golang-win32/win32/advapi32"
 	"github.com/0xrawsec/whids/utils"
 	"github.com/0xrawsec/whids/utils/command"
@@ -28,59 +25,40 @@ const (
 )
 
 var (
-	versionRe = regexp.MustCompile(
-		`(?s:System\sMonitor\s(?P<version>v\d+(\.\d+)?)\s-[.\s].*` +
-			`<manifest schemaversion="(?P<schemaversion>\d+(\.\d+)?)" binaryversion="(?P<binaryversion>\d+(\.\d+)?)">)`,
-	)
-
 	DefaultTimeout = 5 * time.Second
 )
 
+// stdCmdOutput normalises Sysmon console output (UTF-16LE with or without
+// BOM, or UTF-8) to UTF-8.
 func stdCmdOutput(b []byte) []byte {
-	if len(b) >= 2 {
-		// check UTF16 BOM
-		if b[1] == '\xfe' && b[0] == '\xff' {
-			b = []byte(win32.UTF16BytesToString(b))
-		}
-	}
-	return b
+	return DecodeCommandOutput(b)
 }
 
+// Versions runs `sysmon -s` on image and returns the Sysmon version, the
+// configuration schema version and the binary version. It fails when the
+// schema version cannot be determined, as configuring Sysmon without it
+// makes recent releases crash.
 func Versions(image string) (version, schema, binary string, err error) {
 	var out []byte
 
-	sh := submatch.NewHelper(versionRe)
-
-	if fsutil.IsFile(image) {
-
-		c := command.CommandTimeout(
-			DefaultTimeout,
-			image,
-			"-s",
-		)
-		defer c.Terminate()
-
-		if out, err = c.CombinedOutput(); err != nil {
-			err = fmt.Errorf("failed to run sysmon schema command: %s", err)
-			return
-		}
-
-		// standardize output
-		out = stdCmdOutput(out)
-
-		sh.Prepare(out)
-		if v, err := sh.GetBytes("version"); err == nil {
-			version = string(v)
-		}
-		if sv, err := sh.GetBytes("schemaversion"); err == nil {
-			schema = string(sv)
-		}
-		if bv, err := sh.GetBytes("binaryversion"); err == nil {
-			binary = string(bv)
-		}
+	if !fsutil.IsFile(image) {
+		err = fmt.Errorf("sysmon image not found: %s", image)
+		return
 	}
 
-	return
+	c := command.CommandTimeout(
+		DefaultTimeout,
+		image,
+		"-s",
+	)
+	defer c.Terminate()
+
+	if out, err = c.CombinedOutput(); err != nil {
+		err = fmt.Errorf("failed to run sysmon schema command: %s", err)
+		return
+	}
+
+	return ParseVersions(out)
 }
 
 func InstallOrUpdate(image string) (err error) {

@@ -93,7 +93,7 @@ jobs:
           go test -json -race -count=1 -timeout 20m \
             -coverprofile=coverage.out -covermode=atomic \
             $PORTABLE_PKGS > go-test-linux.json || status=$?
-          python3 .github/scripts/go-test-report.py go-test-linux.json "Test (linux, race)" || status=1
+          python3 .github/scripts/go-test-report.py go-test-linux.json "Test (linux, race)" "$status" || status=1
           exit "$status"
 
       - name: Coverage summary
@@ -133,7 +133,7 @@ jobs:
         run: |
           go test -json -count=1 -timeout 30m ./... > go-test-windows.json
           $status = $LASTEXITCODE
-          python .github/scripts/go-test-report.py go-test-windows.json "Test (windows)"
+          python .github/scripts/go-test-report.py go-test-windows.json "Test (windows)" $status
           if ($LASTEXITCODE -ne 0) { $status = 1 }
           exit $status
 
